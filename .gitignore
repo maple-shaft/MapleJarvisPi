@@ -1,0 +1,38 @@
+# Python Stuff
+
+.venv/*
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.env
+.venv
+venv/
+*.egg
+*.egg-info
+
+# Installer files
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Visual Studio Code
+
+.vscode/*
+
+# Container Volumes
+volumes/*
+*.deb
+*.gguf
+*.rdb
+.ollama/*
+*.pth
+*.t7
+*.wav

@@ -1,0 +1,6 @@
+numpy<2
+onnxruntime
+openwakeword
+pydub
+pyaudio
+torch
