@@ -1,43 +1,30 @@
 from audio_input import MicrophoneAudioInput
-from audio_output import AudioOutput
 from audio_to_text import AudioRecorder
-from pi_client import PiClient
+import time
 import wave
-import pyaudio as pa
+import pyaudio
 import numpy as np
-import threading as t
 from scipy import signal
+#import matplotlib.pyplot as plt
 
-SAMPLE_RATE = 16000
-SAMPLE_WIDTH = 2
-FORMAT = pa.paInt16
-CHANNELS = 1
-DEVICE_INDEX = 1
-HOST = "10.0.0.169"
-PORT = 9100
-
-print("Starting MapleJarvisPi")
-
-audio_input = MicrophoneAudioInput(sample_rate=16000, format=pa.paInt16, channels=1, device_index=1)
+audio_input = MicrophoneAudioInput(sample_rate=16000, format=pyaudio.paInt16, channels=1, device_index=1)
 aur = AudioRecorder(audio_input=audio_input)
-client = PiClient(host=HOST, port = PORT)
-client.start()
 
-audio_output = AudioOutput(client=client,
-                           sample_rate=SAMPLE_RATE,
-                           sample_width=SAMPLE_WIDTH,
-                           channels=CHANNELS)
-audio_output.start()
+print("Hello World")
 
 def thing(chunk):
     pcm_data = chunk.astype(np.float32) / 32768.0
+    #pcm_data = np.frombuffer(chunk, dtype=np.float32)
+    #pcm_data = np.frombuffer(chunk, dtype=np.int16)
     data_16000 = signal.resample_poly(pcm_data, 16000, 44100)
     return data_16000.astype(np.int16).tobytes()
 
 while True:
+    #time.sleep(3)
     audio_data = aur.get_audio_for_transcription()
     audio16 = np.int16(audio_data * 32767)
-    client.send(audio16)
+    #plt.plot(audio16)
+    #plt.show()
     print(f"Audio data length: {len(audio16)}")
     with wave.open("/tmp/pitest.wav", "wb") as wv:
         wv.setnchannels(1)
