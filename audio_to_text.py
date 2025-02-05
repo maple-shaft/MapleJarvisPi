@@ -24,13 +24,23 @@ class AudioRecorder:
         device : str = "cpu",
         use_microphone = True,
         wakewords = "hey jarvis",
-        silero_vad_model = None
+        silero_vad_model = None,
+        wakeword_timeout : float = 5.0,
+        wakeword_buffer_duration : float = 0.1,
+        min_length_of_recording = 0.5,
+        beam_size_realtime = 2,
+        allowed_to_early_transcribe = True,
+        start_recording_on_voice_activity = True,
+        stop_recording_on_voice_deactivity = True,
+	prerecording_buffer_duration : float = 1.0,
+        post_speech_silence_duration : float = 0.6,
+        webrtc_sensitivity = 3
         ):
 
         self.buffer_size = buffer_size
         self.sample_rate = sample_rate
         self.device = device
-        self.pre_recording_buffer_duration : float = 1.0
+        self.pre_recording_buffer_duration : float = prerecording_buffer_duration
         self.language = None
         self.realtime_batch_size : int = 16
         self.audio_input = audio_input
@@ -42,9 +52,9 @@ class AudioRecorder:
         self.openwakeword_buffer_size = None
         self.openwakeword_frame_rate = None
         self.wakeword_backend = "openwakeword"
-        self.wakeword_activation_delay : float = (0.0)
-        self.wakeword_timeout : float = 5.0
-        self.wakeword_buffer_duration : float = 0.1
+        self.wakeword_activation_delay : float = (4.0)
+        self.wakeword_timeout : float = wakeword_timeout
+        self.wakeword_buffer_duration : float = wakeword_buffer_duration
         self.wakeword_detected = False
         self.wakeword_detect_time = 0
         self.on_wakeword_detected = None
@@ -70,21 +80,21 @@ class AudioRecorder:
         self.recording_stop_time = 0
         self.silero_check_time = 0
         self.silero_working = False
-        self.silero_sensitivity = 0.4
+        self.silero_sensitivity = 0.5
         self.silero_deactivity_detection = False
         self.input_device_index : int | None = None
-        self.min_length_of_recording = 0.5
-        self.beam_size_realtime = 3
+        self.min_length_of_recording = min_length_of_recording
+        self.beam_size_realtime = beam_size_realtime
         self.suppress_tokens: Optional[List[int]] = [-1]
         self.early_transcription_on_silence = 0
-        self.post_speech_silence_duration = 0.6
+        self.post_speech_silence_duration = post_speech_silence_duration
         self.transcribe_count = 0
 
         # Flags and state
         self.is_silero_speech_active = False
-        self.allowed_to_early_transcribe = True
-        self.start_recording_on_voice_activity = True
-        self.stop_recording_on_voice_deactivity = True
+        self.allowed_to_early_transcribe = allowed_to_early_transcribe
+        self.start_recording_on_voice_activity = start_recording_on_voice_activity
+        self.stop_recording_on_voice_deactivity = stop_recording_on_voice_deactivity
         self.is_shutdown = False
         self.is_recording = False
         self.is_running = True
@@ -116,7 +126,7 @@ class AudioRecorder:
             if mp.get_start_method(allow_none=True) is None:
                 mp.set_start_method("spawn")
         except RuntimeError as e:
-            print(f"Start method has already been set. Details: {e}")
+            print(f"AudioRecorder.__init__: Start method has already been set. Details: {e}")
 
         # Threads
         self.recording_thread = None
@@ -149,7 +159,7 @@ class AudioRecorder:
 
         # Start audio data reading process
         if self.use_microphone:
-            print("Initializing audio recording"
+            print("AudioRecorder.__init__: Initializing audio recording"
                          " (creating pyAudio input stream,"
                          f" sample rate: {self.sample_rate}"
                          f" buffer size: {self.buffer_size}"
@@ -166,6 +176,14 @@ class AudioRecorder:
                     self.audio_input
                 )
             )
+
+        try:
+            import webrtcvad
+            self.webrtc_vad_model = webrtcvad.Vad()
+            self.webrtc_vad_model.set_mode(webrtc_sensitivity)
+        except Exception as e:
+            print("webrtcvad error")
+            raise
         
         # Setup voice activity detection model Silero VAD
         try:
@@ -173,16 +191,16 @@ class AudioRecorder:
                 self.silero_vad_model, _ = torch.hub.load(
                     repo_or_dir="snakers4/silero-vad",
                     model="silero_vad",
-                    verbose=False,
+                    verbose=True,
                     onnx=False
                 )
         except Exception as e:
-            print(f"Error initializing Silero VAD "
+            print(f"AudioRecorder.__init__: Error initializing Silero VAD "
                               f"voice activity detection engine: {e}"
                               )
             raise
 
-        print("Silero VAD voice activity detection "
+        print("AudioRecorder.__init__: Silero VAD voice activity detection "
                       "engine initialized successfully"
                       )
         
@@ -208,7 +226,7 @@ class AudioRecorder:
                 wakeword_models=["hey_jarvis_v0.1.tflite"]
             )
         except Exception as e:
-            print(f"Exception encountered {e}")
+            print(f"AudioRecorder.init_wakewords: Exception encountered in init_wakewords: {e}")
 
     @staticmethod
     def _audio_worker(
@@ -264,14 +282,14 @@ class AudioRecorder:
 
                             audio_queue.put(to_process)
                 except OSError as oe:
-                    print(f"OSError encountered: {oe}")
+                    print(f"OSError encountered in audio_worker: {oe}")
                     continue
                 except Exception as e:
-                    print(f"Exception encountered: {e}")
+                    print(f"Exception encountered in audio_worker: {e}")
                     continue
         except KeyboardInterrupt:
             interrupt_stop_event.set()
-            print("Audio data worker process finished due to KeyboardInterrupt")
+            print("Audio data worker process finished due to KeyboardInterrupt in audio_worker")
         finally:
             # After recording stops, feed remaining buffer data
             if buffer:
@@ -280,7 +298,7 @@ class AudioRecorder:
                 if audio_input:
                     audio_input.cleanup()
             except Exception as e:
-                print(f"Exception encountered during audio_input cleanup {e}")
+                print(f"Exception encountered during audio_input cleanup in audio_worker {e}")
 
     def wakeup(self):
         """Wakeup the audio_input"""
@@ -295,12 +313,10 @@ class AudioRecorder:
         # between stopping and starting recording
         if (time.time() - self.recording_stop_time
                 < 0.0):
-            print("Attempted to start recording "
-                         "too soon after stopping."
-                         )
+            print("AudioRecorder.start: Attempted to start recording too soon after stopping.")
             return self
 
-        print("recording started")
+        print("AudioRecorder.start: recording started")
         self._set_state("recording")
         self.wakeword_detected = False
         self.wakeword_detect_time = 0
@@ -324,7 +340,7 @@ class AudioRecorder:
         # between starting and stopping recording
         if (time.time() - self.recording_start_time
                 < self.min_length_of_recording):
-            print("Attempted to stop recording too soon after starting")
+            print("AudioRecorder.stop: Attempted to stop recording too soon after starting")
             return self
 
         self.is_recording = False
@@ -370,14 +386,14 @@ class AudioRecorder:
                 self._set_state("listening")
                 self.start_recording_on_voice_activity = True
 
-                print("Waiting for recording to start...")
+                print("AudioRecorder.wait_audio: Waiting for recording to start...")
                 while not self.interrupt_stop_event.is_set():
                     if self.start_recording_event.wait(timeout = 0.04):
                         break
             # if recording is ongoing, then wait for voice inactivity
             if self.is_recording:
                 self.stop_recording_on_voice_deactivity = True
-                print("Waiting for recording to stop...")
+                print("AudioRecorder.wait_audio: Waiting for recording to stop...")
                 while not self.interrupt_stop_event.is_set():
                     if (self.stop_recording_event.wait(timeout = 0.02)):
                         break
@@ -414,7 +430,7 @@ class AudioRecorder:
             if self.reader_process:
                 self.reader_process.join(timeout=10)
                 if self.reader_process.is_alive():
-                    print("Reader process didnt terminate, forcefully terminate it")
+                    print("AudioRecorder.shutdown: Reader process didnt terminate, forcefully terminate it")
                     self.reader_process.terminate()
             
             import gc
@@ -464,13 +480,13 @@ class AudioRecorder:
                 if scores[-1] > 0.01:
                     print(f"Score = {scores[-1]}")
                     # Test code
-                    testb = pcm.tobytes()
-                    import wave
-                    with wave.open("/tmp/maybetest.wav", "wb") as wv:
-                        wv.setnchannels(1)
-                        wv.setframerate(16000)
-                        wv.setsampwidth(2)
-                        wv.writeframes(testb)
+                    #testb = pcm.tobytes()
+                    #import wave
+                    #with wave.open("/tmp/maybetest.wav", "wb") as wv:
+                    #    wv.setnchannels(1)
+                    #    wv.setframerate(16000)
+                    #    wv.setsampwidth(2)
+                    #    wv.writeframes(testb)
                 if scores[-1] >= self.wakewords_sensitivity and scores[-1] > max_score:
                     max_score = scores[-1]
                     max_index = idx
@@ -525,7 +541,7 @@ class AudioRecorder:
                 else:
                     raise Exception(result)
             except Exception as e:
-                print(f"Error during transcription: {str(e)}")
+                print(f"AudioRecorder.transcribe: Error during transcription: {str(e)}")
                 raise e
 
     def get_audio_for_transcription(self):
@@ -534,7 +550,7 @@ class AudioRecorder:
         try:
             self.wait_audio()
         except KeyboardInterrupt:
-            print("KeyboardInterrupt in text() method")
+            print("AudioRecorder.get_audio_for_transcription: KeyboardInterrupt in text() method")
             self.shutdown()
             raise  # Re-raise the exception after cleanup
 
@@ -561,36 +577,38 @@ class AudioRecorder:
             while self.is_running:
                 if last_inner_try_time:
                     last_processing_time = time.time() - last_inner_try_time
-                    if last_processing_time > 0.1:
-                        print("Processing took a bit too long...")
+                    #print(f"AudioRecorder._recording_worker: last_processing_time = {last_processing_time}")
+                    if last_processing_time > 0.1: # DAB: Original value 0.1
+                        print("recording_worker: Processing took a bit too long...")
                 last_inner_try_time = time.time()
                 try:
                     try:
-                        data = self.audio_queue.get(timeout=0.01)
+                        data = self.audio_queue.get(timeout=0.01) # DAB: Original value 0.01
+                        #print("DAB: Found some data in audio_queue!")
                         self.last_words_buffer.append(data)
                     except queue.Empty:
                         if not self.is_running:
-                            print("Recording worker: Not running, breaking loop")
+                            print("recording_worker: Not running, breaking loop")
                             break
                         continue
-                    #print("DAB: Found data in the audio queue in _recording_worker")
                     # Is there a callback defined for on_recorded_chunk?
                     if self.on_recorded_chunk:
                         self.on_recorded_chunk(data)
 
                     # Check handle buffer overflow, assume True for now
-                    if self.audio_queue.qsize() > 100:  # allowed latency limit
-                        print("Recording Worker: queue size exceeds limit")
+                    if self.audio_queue.qsize() > 50:  # allowed latency limit
+                        print("recording_worker: queue size exceeds limit")
 
-                    while self.audio_queue.qsize() > 100:
+                    while self.audio_queue.qsize() > 50:
                         data = self.audio_queue.get()
                 except BrokenPipeError:
-                    print("Recording Worker: broken pipe error")
+                    print("recording_worker: broken pipe error")
                     self.is_running = False
                     break
 
                 if time_since_last_buffer_message:
                     time_passed = time.time() - time_since_last_buffer_message
+                    #print(f"AudioRecorder._recording_worker: time_passed since last buffer message = {time_passed}")
                     if time_passed > 1:
                         time_since_last_buffer_message = time.time()
                 else:
@@ -602,12 +620,14 @@ class AudioRecorder:
                 if not self.is_recording:
                     #print("not recording...")
                     time_since_listen_start = (time.time() - self.listen_start if self.listen_start else 0)
+                    #print(f"AudioRecorder._recording_worker: time_since_listen_start = {time_since_listen_start}")
                     wakeword_activation_delay_passed = (
                         time_since_listen_start > self.wakeword_activation_delay
                     )
-                    #print(f"wakeword_activation_delay_passed {wakeword_activation_delay_passed} and delay_was_passed {delay_was_passed}")
+                    if wakeword_activation_delay_passed:
+                        print(f"wakeword_activation_delay_passed {wakeword_activation_delay_passed} and delay_was_passed {delay_was_passed}")
                     if wakeword_activation_delay_passed and not delay_was_passed:
-                        #print(f"self.wakeword_activation_delay {self.wakeword_activation_delay}")
+                        print(f"self.wakeword_activation_delay {self.wakeword_activation_delay}")
                         if self.wakeword_activation_delay:
                             if self.on_wakeword_timeout:
                                 self.on_wakeword_timeout()
@@ -615,6 +635,7 @@ class AudioRecorder:
                     
                     # Set state
                     if not self.recording_stop_time:
+                        print("We are inside the if not self.recording_stop_time block!")
                         if wakeword_activation_delay_passed and not self.wakeword_detected:
                             self._set_state("wakeword")
                         else:
@@ -644,6 +665,7 @@ class AudioRecorder:
 
                     # Check for voice activity to trigger start of recording
                     if (not wakeword_activation_delay_passed and self.start_recording_on_voice_activity) or self.wakeword_detected:
+                        #print("AudioRecorder._recording_worker: about to check if voice is active..")
                         if self._is_voice_active():
                             self.start()
                             self.start_recording_on_voice_activity = False
@@ -677,7 +699,7 @@ class AudioRecorder:
 
                     # Stop the recording if silence is detected after speech
                     if self.stop_recording_on_voice_deactivity:
-                        is_speech = self.silero_deactivity_detection and self._is_silero_speech(data)
+                        is_speech = self._is_silero_speech(data)
                         
                         if not self.speech_end_silence_start:
                             str_speech_end_silence_start = "0"
@@ -723,7 +745,7 @@ class AudioRecorder:
                     # Reset after stopping recording to ensure clean state
                     self.stop_recording_on_voice_deactivity = False
 
-                if time.time() - self.silero_check_time > 0.1:
+                if time.time() - self.silero_check_time > 0.2: #DAB: This used to be 0.1
                     self.silero_check_time = 0
 
                 # Handle wake word timeout (waited to long initiating
@@ -778,9 +800,9 @@ class AudioRecorder:
         audio_chunk = audio_chunk.astype(np.float32) / 32768.0
         vad_prob = self.silero_vad_model(
             torch.from_numpy(audio_chunk), 16000).item()
-        import math
-        rd_prob = math.floor(vad_prob * 100)
-        print(f"{rd_prob}")
+        #import math
+        #rd_prob = math.floor(vad_prob * 100)
+        #print(f"{rd_prob}")
         is_silero_speech_active = vad_prob > (1 - self.silero_sensitivity)
         self.is_silero_speech_active = is_silero_speech_active
         self.silero_working = False
