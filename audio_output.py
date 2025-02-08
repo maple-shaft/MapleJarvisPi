@@ -1,6 +1,5 @@
 import pyaudio as pa
 import numpy as np
-import threading as t
 import scipy as sp
 import time
 import sounddevice as sd
@@ -12,12 +11,11 @@ class AudioOutput:
         self.sample_rate = sample_rate
         self.sample_width = sample_width
         self.channels = channels
-        self.thread = t.Thread(target=self._fetch_and_play, name="audio_output_thread")
         self.client = client
 
     def start(self):
         print("Starting AudioOutput")
-        self.thread.run()
+        self._fetch_and_play()
 
     def _fetch_and_play(self):
         print("Starting fetch_and_play runnable")
@@ -33,7 +31,9 @@ class AudioOutput:
                             sample_rate = self.sample_rate,
                             blocking = True
                     )
+            except KeyboardInterrupt:
+                print("AudioOutput: Captured KeyboardInterrupt!")
+                break
             except Exception as e:
                 print(f"Exception encountered in fetch_and_play {e}")
-
                 
