@@ -60,7 +60,7 @@ def main_audio_capture(client : PiClient):
             print("main.py: about to send audio data to client.")
             client.send(audio16)
             print(f"main.py: Audio data length: {len(audio16)}")
-            break
+            #break
             #debug_write_to_file(audio16)
     except KeyboardInterrupt:
         print("Interrupt signal received, gracefully shutting down.")

@@ -19,6 +19,7 @@ class AudioOutput:
 
     def start(self):
         print("Starting AudioOutput")
+        print(f"Devices: {sd.query_devices()}")
         self.fetch_thread.start()
 
     def next_bytes(self):
@@ -33,13 +34,14 @@ class AudioOutput:
         while True:
             try:
                 data = self.next_bytes()
-                if data == None:
+                if data is None:
                     time.sleep(1)
                     continue
                 else:
-                    print(f"Next bytes fetched for playing: {type(nb)}")
+                    print(f"Next bytes fetched for playing: {type(data)}")
+                    print(f"Devices: {sd.query_devices()}")
                     sd.play(data = data,
-                            sample_rate = self.sample_rate,
+                            samplerate = self.sample_rate,
                             blocking = True
                     )
             except KeyboardInterrupt:
@@ -47,4 +49,4 @@ class AudioOutput:
                 break
             except Exception as e:
                 print(f"Exception encountered in fetch_and_play {e}")
-                
+                pass

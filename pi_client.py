@@ -51,7 +51,7 @@ class PiClient:
     def _recv_worker(self):
         while not self.shutdown_event.is_set():
             try:
-                time.sleep(0.1)
+                time.sleep(0.4)
                 self.receive()
                 #recv_data = self.recv_queue.get(timeout=0.1):
             except q.Empty:
@@ -74,7 +74,7 @@ class PiClient:
         self.socket.sendall(val)
 
     def receive(self):
-        print("PiClient.receive: Starting receive")
+        #print("PiClient.receive: Starting receive")
         try:
             length = self.socket.recv(8)
             if not length or length == "":

@@ -201,7 +201,7 @@ class AudioRecorder:
         # Start the recording worker thread
         self.recording_thread = self._start_thread(target=self._recording_worker)
 
-    def _start_thread(self, target=None, args=(), executor = None):
+    def _start_thread(self, target=None, args=(), executor = None, daemon = False):
         """If linux uses standard threads, otherwise uses pytorch multiprocessing"""
         #thread = threading.Thread(target = target, args = args)
         #thread.daemon = True
@@ -210,6 +210,7 @@ class AudioRecorder:
             thread = self.executor.submit(target)
         else:
             thread = threading.Thread(target=target, args = args)
+            thread.daemon = daemon
             thread.start()
         return thread
 
@@ -406,20 +407,25 @@ class AudioRecorder:
                 print("AudioRecorder.wait_audio: About to convert recorded frames to the appropriate format.")
             # Convert recorded frames to the appropriate audio format
             audio_array = np.frombuffer(b"".join(self.frames), dtype=np.int16)
-            self.audio = copy.deepcopy(audio_array.astype(np.float32) / 32768.0)
+            ret_audio = copy.deepcopy(audio_array.astype(np.float32) / 32768.0)
             self.frames.clear()
             self.clear_audio_queue()
-
+            self.audio = None
             # Reset recording related timestamps
             if self.debug:
                 print("AudioRecorder.wait_audio: About to reset recording related timestamps")
+            self.is_recording = False
+            self.start_recording_on_voice_activity = False
+            self.stop_recording_on_voice_deactivity = False
+
+            #self.abort()
             self.recording_stop_time = 0
             self.listen_start = 0
             self._set_state("inactive")
 
             if self.debug:
                 print("END wait_audio")
-            return self.audio
+            return ret_audio
         except Exception as e:
             print(f"Exception encounterd in wait_audio {e}")
             self.shutdown()
