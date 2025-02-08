@@ -57,8 +57,10 @@ def main_audio_capture(client : PiClient):
             audio_data = aur.wait_audio()
             print("main.py: GOT AUDIO_DATA!!!")
             audio16 = np.int16(audio_data * 32767)
+            print("main.py: about to send audio data to client.")
             client.send(audio16)
-            print(f"Audio data length: {len(audio16)}")
+            print(f"main.py: Audio data length: {len(audio16)}")
+            break
             #debug_write_to_file(audio16)
     except KeyboardInterrupt:
         print("Interrupt signal received, gracefully shutting down.")
@@ -67,65 +69,17 @@ def main_audio_capture(client : PiClient):
         #audio_input.cleanup() # VERIFY
         #client.stop() # VERIFY
 
-def callback(arg : str):
-    print(f"Callback: {arg}")
-
-def on_recording_start():
-    callback("on_recording_start")
-
-def on_recording_stop():
-    callback("on_recording_stop")
-
-def on_recorded_chunk(arg):
-    callback("on_recorded_chunk")
-
-def on_wakeword_detected():
-    callback("on_wakeword_detected")
-
-def on_wakeword_timeout():
-    callback("on_wakeword_timeout")
-
-def on_wakeword_detection_start():
-    callback("on_wakeword_detection_start")
-
-def on_wakeword_detection_end():
-    callback("on_wakeword_detection_end")
-
 if __name__ == "__main__":
     print("Starting main...")
     client = PiClient(host=HOST, port = PORT)
     client.start()
-
+    audio_output = AudioOutput(
+         recv_queue = client.recv_queue,
+         sample_rate = SAMPLE_RATE,
+         sample_width = SAMPLE_WIDTH,
+         channels = 1)
     main_audio_capture(client = client)
+    time.sleep(4)
+    audio_output.start()
 
-    #audio_input = MicrophoneAudioInput(sample_rate=16000, format=pa.paInt16, channels=1, device_index=1)
-
-    #aur = AudioRecorder(audio_input=audio_input,
-    #                    silero_vad_model = silero_vad_model)
-                        #on_recording_start = on_recording_start,
-                        #on_recording_stop = on_recording_stop,
-                        #on_recorded_chunk = on_recorded_chunk,
-                        #on_wakeword_detected = on_wakeword_detected,
-                        #on_wakeword_timeout = on_wakeword_timeout,
-                        #on_wakeword_detection_start = on_wakeword_detection_start,
-                        #on_wakeword_detection_end = on_wakeword_detection_end)
-
-    #audio_output = AudioOutput(client=client,
-    #                       sample_rate=SAMPLE_RATE,
-    #                       sample_width=SAMPLE_WIDTH,
-    #                       channels=CHANNELS)
-    #process_list = []
-    #process_list.append(Process(target=main_audio_capture, args=[client]))
-    #process_list.append(Process(target=main_audio_output, args=[audio_output]))
-    #for pr in process_list:
-        #pr.daemon = True
-    #    pr.start()
-        #pr.join()
-    #    time.sleep(4)
-
-    # Create asyncio tasks
-    #async with asyncio.TaskGroup() as tg:
-    #    audio_capture_task = tg.create_task(main_audio_capture(aur, client))
-        #audio_output_task = tg.create_task(audio_output.start())
-        #client_task = tg.create_task(client.start())
 

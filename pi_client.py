@@ -22,6 +22,8 @@ class PiClient:
         self.recv_queue = mp.Queue()
         self.p_send_pipe, self.c_send_pipe = mp.Pipe()
         self.shutdown_event = mp.Event()
+        self.recv_thread = Thread(target=self._recv_worker)
+        self.send_thread = Thread(target=self._send_worker)
         #self.recv_future = executor.submit(self._recv_worker)
         #self.send_future = executor.submit(self._send_worker)
 
@@ -30,8 +32,8 @@ class PiClient:
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.connect((self.host, self.port))
         print(f"Server connecting to {self.host}:{self.port}")
-        self.recv_thread = Thread(target=self._recv_worker)
-        self.send_thread = Thread(target=self._send_worker)
+        self.recv_thread.start()
+        self.send_thread.start()
         # start receive loop
         #self.receive()
 
@@ -75,6 +77,9 @@ class PiClient:
         print("PiClient.receive: Starting receive")
         try:
             length = self.socket.recv(8)
+            if not length or length == "":
+                return
+
             length = int(length.decode("utf-8"))
             full_length = length
             message = None
@@ -97,6 +102,7 @@ class PiClient:
             self.recv_queue.put(obj)
         except Exception as e:
             print(f"PiClient.receive: Exception encountered in receive: {e}")
+            pass
     
     def finalize(self):
         self.shutdown_event.set()

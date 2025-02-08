@@ -10,6 +10,7 @@ import torch.multiprocessing as mp
 import torch
 import numpy as np
 import copy
+import webrtcvad
 from typing import List, Optional
 from audio_input import AudioInput
 from concurrent.futures import ProcessPoolExecutor
@@ -43,7 +44,8 @@ class AudioRecorder:
         on_wakeword_detection_start = None,
         on_wakeword_detection_end = None,
         ctx = None,
-        executor : ProcessPoolExecutor = None
+        executor : ProcessPoolExecutor = None,
+        debug = False
         ):
 
         self.buffer_size = buffer_size
@@ -102,8 +104,10 @@ class AudioRecorder:
         self.suppress_tokens: Optional[List[int]] = [-1]
         self.early_transcription_on_silence = 0
         self.post_speech_silence_duration = post_speech_silence_duration
+        self.is_webrtc_speech_active = False
 
         # Flags and state
+        self.debug = debug
         self.is_silero_speech_active = False
         self.start_recording_on_voice_activity = start_recording_on_voice_activity
         self.stop_recording_on_voice_deactivity = stop_recording_on_voice_deactivity
@@ -186,6 +190,13 @@ class AudioRecorder:
         print("AudioRecorder.__init__: Silero VAD voice activity detection "
                       "engine initialized successfully"
         )
+
+        # Setup voice activity detection model WebRTC
+        try:
+            self.webrtc_vad_model = webrtcvad.Vad()
+            self.webrtc_vad_model.set_mode(webrtc_sensitivity)
+        except Exception as e:
+            raise
         
         # Start the recording worker thread
         self.recording_thread = self._start_thread(target=self._recording_worker)
@@ -298,7 +309,8 @@ class AudioRecorder:
             print("AudioRecorder.start: Attempted to start recording too soon after stopping.")
             return self
 
-        print("AudioRecorder.start: recording started")
+        if self.debug:
+            print("AudioRecorder.start: recording started")
         self._set_state("recording")
         self.wakeword_detected = False
         self.wakeword_detect_time = 0
@@ -325,7 +337,8 @@ class AudioRecorder:
             print("AudioRecorder.stop: Attempted to stop recording too soon after starting")
             return self
 
-        print("AudioRecorder.stop: recording stopped")
+        if self.debug:
+            print("AudioRecorder.stop: recording stopped")
         self.is_recording = False
         self.recording_stop_time = time.time()
         self.is_silero_speech_active = False
@@ -361,7 +374,8 @@ class AudioRecorder:
     def wait_audio(self):
         """Waits for the start and completion of the recording process"""
         try:
-            print(f"START wait_audio, if listen_start is 0 then we will set it now. listen_start is {self.listen_start}")
+            if self.debug:
+                print(f"START wait_audio, if listen_start is 0 then we will set it now. listen_start is {self.listen_start}")
             if self.listen_start == 0:
                 self.listen_start = time.time()
 
@@ -370,33 +384,41 @@ class AudioRecorder:
                 self._set_state("listening")
                 self.start_recording_on_voice_activity = True
 
-                print("AudioRecorder.wait_audio: Waiting for recording to start...")
+                if self.debug:
+                    print("AudioRecorder.wait_audio: Waiting for recording to start...")
                 while not self.interrupt_stop_event.is_set():
                     if self.start_recording_event.wait(timeout = 0.04): # DAB: Original value 0.04
-                        print("AudioRecorder.wait_audio: BREAK on start_recording_event")
+                        if self.debug:
+                            print("AudioRecorder.wait_audio: BREAK on start_recording_event")
                         break
             # if recording is ongoing, then wait for voice inactivity
             if self.is_recording:
                 self.stop_recording_on_voice_deactivity = True
-                print("AudioRecorder.wait_audio: Waiting for recording to stop...")
+                if self.debug:
+                    print("AudioRecorder.wait_audio: Waiting for recording to stop...")
                 while not self.interrupt_stop_event.is_set():
                     if (self.stop_recording_event.wait(timeout = 0.02)): # DAB: Originally 0.02
-                        print("AudioRecorder.wait_audio: BREAK on stop_recording_event")
+                        if self.debug:
+                            print("AudioRecorder.wait_audio: BREAK on stop_recording_event")
                         break
 
-            print("AudioRecorder.wait_audio: About to convert recorded frames to the appropriate format.")
+            if self.debug:
+                print("AudioRecorder.wait_audio: About to convert recorded frames to the appropriate format.")
             # Convert recorded frames to the appropriate audio format
             audio_array = np.frombuffer(b"".join(self.frames), dtype=np.int16)
             self.audio = copy.deepcopy(audio_array.astype(np.float32) / 32768.0)
             self.frames.clear()
+            self.clear_audio_queue()
 
             # Reset recording related timestamps
-            print("AudioRecorder.wait_audio: About to reset recording related timestamps")
+            if self.debug:
+                print("AudioRecorder.wait_audio: About to reset recording related timestamps")
             self.recording_stop_time = 0
             self.listen_start = 0
             self._set_state("inactive")
 
-            print("END wait_audio")
+            if self.debug:
+                print("END wait_audio")
             return self.audio
         except Exception as e:
             print(f"Exception encounterd in wait_audio {e}")
@@ -422,7 +444,7 @@ class AudioRecorder:
                 self.reader_process.join(timeout=10)
                 if self.reader_process.is_alive():
                     print("AudioRecorder.shutdown: Reader process didnt terminate, forcefully terminate it")
-                    self.reader_process.terminate()
+                    #self.reader_process.terminate()
             
             import gc
             gc.collect()
@@ -431,21 +453,26 @@ class AudioRecorder:
         """
         Processes audio data to detect wake words.
         """
-        print(f"AudioRecorder._process_wakeword: START, data is type {type(data)} and len is {len(data)}")
+        if self.debug:
+            print(f"AudioRecorder._process_wakeword: START, data is type {type(data)} and len is {len(data)}")
         pcm = np.frombuffer(data, dtype=np.int16)
-        print(f"pcm = {type(pcm)} and len = {len(pcm)}")
+        if self.debug:
+            print(f"pcm = {type(pcm)} and len = {len(pcm)}")
         prediction = self.openwakeword.predict(pcm)
-        print(f"prediction: {prediction}")
+        if self.debug:
+            print(f"prediction: {prediction}")
         max_score = -1
         max_index = -1
         wakewords_in_prediction = len(self.openwakeword.prediction_buffer.keys())
-        print(f"wakewords in prediction = {wakewords_in_prediction}")
+        if self.debug:
+            print(f"wakewords in prediction = {wakewords_in_prediction}")
         self.wakewords_sensitivities
         if wakewords_in_prediction:
             for idx, mdl in enumerate(self.openwakeword.prediction_buffer.keys()):
                 scores = list(self.openwakeword.prediction_buffer[mdl])
                 #if scores[-1] > 0.01:
-                print(f"Score = {scores[-1]}")
+                if self.debug:
+                    print(f"Score = {scores[-1]}")
                     # Test code
                     #testb = pcm.tobytes()
                     #import wave
@@ -492,17 +519,20 @@ class AudioRecorder:
 
             print("Initialized recording worker")
             while self.is_running:
-                print("START _recording_worker iteration!")
+                if self.debug:
+                    print("START _recording_worker iteration!")
                 if last_inner_try_time:
                     last_processing_time = time.time() - last_inner_try_time
-                    print(f"AudioRecorder._recording_worker: last_processing_time = {last_processing_time}")
+                    if self.debug:
+                        print(f"AudioRecorder._recording_worker: last_processing_time = {last_processing_time}")
                     if last_processing_time > 0.1: # DAB: Original value 0.1
                         print("recording_worker: Processing took a bit too long...")
                 last_inner_try_time = time.time()
                 try:
                     try:
                         data = self.audio_queue.get(timeout=0.01) # DAB: Original value 0.01
-                        print(f"DAB: Found some data in audio_queue: {type(data)}")
+                        if self.debug:
+                            print(f"DAB: Found some data in audio_queue: {type(data)}")
                     except queue.Empty:
                         if not self.is_running:
                             print("recording_worker: Not running, breaking loop")
@@ -525,28 +555,28 @@ class AudioRecorder:
 
                 if time_since_last_buffer_message:
                     time_passed = time.time() - time_since_last_buffer_message
-                    print(f"AudioRecorder._recording_worker: time_passed since last buffer message = {time_passed}")
+                    #print(f"AudioRecorder._recording_worker: time_passed since last buffer message = {time_passed}")
                     if time_passed > 2: # DAB: Original value is 1
-                        print("AudioRecorder._recording_worker: time_passed is more than 1 so reseting!!!!!!!")
+                        #print("AudioRecorder._recording_worker: time_passed is more than 1 so reseting!!!!!!!")
                         time_since_last_buffer_message = time.time()
                 else:
                     time_since_last_buffer_message = time.time()
 
                 failed_stop_attempt = False
 
-                print("AudioRecorder._recording_worker: Check if self.is_recording. If not recording then we can look for wakewords")
+                #print("AudioRecorder._recording_worker: Check if self.is_recording. If not recording then we can look for wakewords")
                 if not self.is_recording:
-                    print("AudioRecorder._recording_worker: not recording...")
+                    #print("AudioRecorder._recording_worker: not recording...")
                     time_since_listen_start = (time.time() - self.listen_start if self.listen_start else 0)
-                    print(f"AudioRecorder._recording_worker: time_since_listen_start = {time_since_listen_start}")
+                    #print(f"AudioRecorder._recording_worker: time_since_listen_start = {time_since_listen_start}")
                     wakeword_activation_delay_passed = (
                         time_since_listen_start > self.wakeword_activation_delay
                     )
-                    print(f"AudioRecorder._recording_worker: time_since_listen_start[{time_since_listen_start}] > self.wakeword_activation_delay[{self.wakeword_activation_delay}]")
-                    if wakeword_activation_delay_passed:
-                        print(f"AudioRecorder._recording_worker: wakeword_activation_delay_passed {wakeword_activation_delay_passed} and delay_was_passed {delay_was_passed}")
+                    #print(f"AudioRecorder._recording_worker: time_since_listen_start[{time_since_listen_start}] > self.wakeword_activation_delay[{self.wakeword_activation_delay}]")
+                    #if wakeword_activation_delay_passed:
+                    #    print(f"AudioRecorder._recording_worker: wakeword_activation_delay_passed {wakeword_activation_delay_passed} and delay_was_passed {delay_was_passed}")
                     if wakeword_activation_delay_passed and not delay_was_passed:
-                        print(f"AudioRecorder._recording_worker: self.wakeword_activation_delay {self.wakeword_activation_delay}")
+                        #print(f"AudioRecorder._recording_worker: self.wakeword_activation_delay {self.wakeword_activation_delay}")
                         if self.wakeword_activation_delay:
                             if self.on_wakeword_timeout:
                                 self.on_wakeword_timeout()
@@ -554,7 +584,7 @@ class AudioRecorder:
                     
                     # Set state
                     if not self.recording_stop_time:
-                        print(f"AudioRecorder._recording_worker: We are inside the if not self.recording_stop_time block! {wakeword_activation_delay_passed} and delay_passed: {delay_was_passed}")
+                        #print(f"AudioRecorder._recording_worker: We are inside the if not self.recording_stop_time block! {wakeword_activation_delay_passed} and delay_passed: {delay_was_passed}")
                         if wakeword_activation_delay_passed and not self.wakeword_detected:
                             self._set_state("wakeword")
                         else:
@@ -563,13 +593,13 @@ class AudioRecorder:
                             else:
                                 self._set_state("inactive")
                     if wakeword_activation_delay_passed:
-                        print("AudioRecorder._recording_worker: wakeword_activation_delay_passed is True")
+                        #print("AudioRecorder._recording_worker: wakeword_activation_delay_passed is True")
                         try:
                             #TODO: This is supposed to return an index where 0 means no wakeword was found, and more
                             # than 0 means that it was found. I think it expects this number to represent a number of 
                             # word samples that should be removed from the audio buffer?
                             wakeword_index = self._process_wakeword(data)
-                            print(f"AudioRecorder._recording_worker: wakeword_index is {wakeword_index}")
+                            #print(f"AudioRecorder._recording_worker: wakeword_index is {wakeword_index}")
                         except struct.error:
                             print("Recording Worker: Error unpacking audio data")
                             continue
@@ -579,7 +609,7 @@ class AudioRecorder:
 
                         # if a wakeword is detected
                         if wakeword_index >= 0:
-                            print(f"AudioRecorder._recording_worker: The wakeword_index is >= 0 therefore wakeword is detected!!! YAY!")
+                            #print(f"AudioRecorder._recording_worker: The wakeword_index is >= 0 therefore wakeword is detected!!! YAY!")
                             wakeword_samples_to_remove = int(self.sample_rate * self.wakeword_buffer_duration)
                             self.wakeword_detected = True
                             if self.on_wakeword_detected:
@@ -587,28 +617,28 @@ class AudioRecorder:
 
                     # Check for voice activity to trigger start of recording
                     if (not wakeword_activation_delay_passed and self.start_recording_on_voice_activity) or self.wakeword_detected:
-                        print("AudioRecorder._recording_worker: about to check if voice is active..")
+                        #print("AudioRecorder._recording_worker: about to check if voice is active..")
                         if self._is_voice_active():
-                            print("AudioRecorder._recording_worker: _is_voice_active returned True so about to start the AudioRecorder")
+                            #print("AudioRecorder._recording_worker: _is_voice_active returned True so about to start the AudioRecorder")
                             self.start()
                             self.start_recording_on_voice_activity = False
                             # Add the buffered audio
                             # to the recording frames
-                            print(f"AudioRecorder._recording_worker: Just a quick frames length check {len(self.frames)}")
+                            #print(f"AudioRecorder._recording_worker: Just a quick frames length check {len(self.frames)}")
                             self.frames.extend(list(self.audio_buffer))
                             self.audio_buffer.clear()
                             self.silero_vad_model.reset_states()
                         else:
-                            print("AudioRecorder._recording_worker: _is_voice_active is FALSE, so checking a copy of data to _check_voice_activity")
+                            #print("AudioRecorder._recording_worker: _is_voice_active is FALSE, so checking a copy of data to _check_voice_activity")
                             data_copy = data[:]
                             self._check_voice_activity(data_copy)
-                    print("AudioRecorder._recording_worker: the last thing we do at the end of not recording is set self.speech_end_silence_start to 0")
+                    #print("AudioRecorder._recording_worker: the last thing we do at the end of not recording is set self.speech_end_silence_start to 0")
                     self.speech_end_silence_start = 0
                 else:
                     # If we are currently recording
-                    print("AudioRecorder._recording_worker: We are actually currently recording!")
+                    #print("AudioRecorder._recording_worker: We are actually currently recording!")
                     if wakeword_samples_to_remove and wakeword_samples_to_remove > 0:
-                        print(f"AudioRecorder._recording_worker: There are wakeword samples to remove... wakeword_samples_to_remove = {wakeword_samples_to_remove} and wakeword_detected = {self.wakeword_detected} PURPLEMONKEYDISHWASHER")
+                        #print(f"AudioRecorder._recording_worker: There are wakeword samples to remove... wakeword_samples_to_remove = {wakeword_samples_to_remove} and wakeword_detected = {self.wakeword_detected} PURPLEMONKEYDISHWASHER")
                         # Remove samples from the beginning of self.frames
                         samples_removed = 0
                         while wakeword_samples_to_remove > 0 and self.frames:
@@ -626,18 +656,18 @@ class AudioRecorder:
                         wakeword_samples_to_remove = 0
 
                     # Stop the recording if silence is detected after speech
-                    print(f"AudioRecoder._recording_worker: about to check stop_recording_on_voice_deactivity = {self.stop_recording_on_voice_deactivity}") 
+                    #print(f"AudioRecoder._recording_worker: about to check stop_recording_on_voice_deactivity = {self.stop_recording_on_voice_deactivity}") 
                     if self.stop_recording_on_voice_deactivity:
                         #print(f"Stopping the recording after detection of silence...")
                         is_speech = self._is_silero_speech(data)
-                        print(f"AudioRecorder._recording_worker: is_speech = {is_speech}")
+                        #print(f"AudioRecorder._recording_worker: is_speech = {is_speech}")
                         
                         if not is_speech:
                             # Voice deactivity was detected, so we start
                             # measuring silence time before stopping recording
                             if self.speech_end_silence_start == 0 and \
                                 (time.time() - self.recording_start_time > self.min_length_of_recording):
-                                print("AudioRecorder._recording_worker: So we did detect voice deactivity, speech_end_silence_start is 0 and we reached the min_length_of_recording parameter. Now set speech_end_silence_start to start now()")
+                                #print("AudioRecorder._recording_worker: So we did detect voice deactivity, speech_end_silence_start is 0 and we reached the min_length_of_recording parameter. Now set speech_end_silence_start to start now()")
                                 self.speech_end_silence_start = time.time()
                         else:
                             if self.speech_end_silence_start:
@@ -646,15 +676,15 @@ class AudioRecorder:
                         if self.speech_end_silence_start and time.time() - \
                                 self.speech_end_silence_start >= \
                                 self.post_speech_silence_duration:
-                            print("AudioRecorder._recording_worker: The silence started, and we exceeded the post_speech_silence_duration")
+                            #print("AudioRecorder._recording_worker: The silence started, and we exceeded the post_speech_silence_duration")
                             # Calculate time difference
                             time_diff = time.time() - self.speech_end_silence_start
                             #print(f"time_diff from speech_end_silence_start: {time_diff}")
 
-                            print("AudioRecorder._recording_worker: Finally, we can append the data to self.frames and invoke self.stop()!")
+                            #print("AudioRecorder._recording_worker: Finally, we can append the data to self.frames and invoke self.stop()!")
                             self.frames.append(data)
                             self.stop()
-                            print(f"AudioRecorder._recording_worker: Stop() has been invoked and we are about to perform a final check to make sure that we are no longer recording. If the stop attempt was successful then we will set self.speech_end_silence_start to 0")
+                            #print(f"AudioRecorder._recording_worker: Stop() has been invoked and we are about to perform a final check to make sure that we are no longer recording. If the stop attempt was successful then we will set self.speech_end_silence_start to 0")
                             if not self.is_recording:
                                 self.speech_end_silence_start = 0
                             else:
@@ -664,9 +694,9 @@ class AudioRecorder:
                 if not self.is_recording and was_recording:
                     # Reset after stopping recording to ensure clean state
                     self.stop_recording_on_voice_deactivity = False
-                    print("AudioRecorder._recording_worker: self.is_recording is False and was_recording is True, therefore we are setting self.stop_recording_on_voice_deactivity to False.")
-                else:
-                    print(f"AudioRecorder._recording_worker: self.is_recording is {self.is_recording} and was_recording is {was_recording}, therefore we are NOT setting self.stop_recording_on_voice_deactivity to False.  Not sure what this means yet though...")
+                    #print("AudioRecorder._recording_worker: self.is_recording is False and was_recording is True, therefore we are setting self.stop_recording_on_voice_deactivity to False.")
+                #else:
+                #    print(f"AudioRecorder._recording_worker: self.is_recording is {self.is_recording} and was_recording is {was_recording}, therefore we are NOT setting self.stop_recording_on_voice_deactivity to False.  Not sure what this means yet though...")
                 
                 tem = (time.time() - self.silero_check_time)
                 #print(f"AudioRecorder._recording_worker: The silero_check_time duration is {tem}, if it exceeds 0.1 then self.silero_check_time will be set to 0.")
@@ -676,7 +706,7 @@ class AudioRecorder:
                 # Handle wake word timeout (waited to long initiating
                 # speech after wake word detection)
                 tem = time.time() - self.wakeword_detect_time
-                print(f"AudioRecorder._recording_worker: The wakeword detect time duration is {tem} which if it is higher than {self.wakeword_timeout} then self.wakeword_detect_time will be set to 0 and self.wakeword_detected will be set to False")
+                #print(f"AudioRecorder._recording_worker: The wakeword detect time duration is {tem} which if it is higher than {self.wakeword_timeout} then self.wakeword_detect_time will be set to 0 and self.wakeword_detected will be set to False")
                 if self.wakeword_detect_time and time.time() - \
                         self.wakeword_detect_time > self.wakeword_timeout:
 
@@ -685,18 +715,18 @@ class AudioRecorder:
                         self.on_wakeword_timeout()
                     self.wakeword_detected = False
 
-                print(f"AudioRecorder._recording_worker: was_recording will be set to self.is_recording which is currently {self.is_recording}")
+                #print(f"AudioRecorder._recording_worker: was_recording will be set to self.is_recording which is currently {self.is_recording}")
                 was_recording = self.is_recording
 
-                print(f"AudioRecorder._recording_worker: about to check if we are currently recording and have no failed stop events. If so then data gets appended to self.frames! failed_stop_event by the way is {failed_stop_attempt}")
+                #print(f"AudioRecorder._recording_worker: about to check if we are currently recording and have no failed stop events. If so then data gets appended to self.frames! failed_stop_event by the way is {failed_stop_attempt}")
                 if self.is_recording and not failed_stop_attempt:
                     self.frames.append(data)
 
                 if not self.is_recording or self.speech_end_silence_start:
-                    print(f"SET data to self.audio_buffer if not recording or silence started... self.is_recording = {self.is_recording} and self.speech_end_silence_start = {self.speech_end_silence_start}")
+                    #print(f"SET data to self.audio_buffer if not recording or silence started... self.is_recording = {self.is_recording} and self.speech_end_silence_start = {self.speech_end_silence_start}")
                     self.audio_buffer.append(data)
 
-                print("END _recording_worker iteration!")
+                #print("END _recording_worker iteration!")
         except Exception as e:
             print(f"Recorder Worker: Exception encountered {e}")
             if not self.interrupt_stop_event.is_set():
@@ -709,7 +739,7 @@ class AudioRecorder:
         Returns:
             bool: True if voice is active, False otherwise.
         """
-        return self.is_silero_speech_active
+        return self.is_webrtc_speech_active
 
     def _is_silero_speech(self, chunk):
         """
@@ -720,7 +750,7 @@ class AudioRecorder:
             16000 sample rate and 16 bits per sample)
         """
         from scipy import signal
-        print("DAB: Check for speech in is_silero_speech...")
+        #print("DAB: Check for speech in is_silero_speech...")
         timing_start = time.time()
 
         if self.sample_rate != 16000:
@@ -738,12 +768,12 @@ class AudioRecorder:
         rd_prob = math.floor(vad_prob * 100)
         #print(f"{rd_prob}")
         is_silero_speech_active = vad_prob > (1 - self.silero_sensitivity)
-        if is_silero_speech_active:
-            print(f"Silero detected speech activity...")
+        #if is_silero_speech_active:
+        #    print(f"Silero detected speech activity...")
         self.is_silero_speech_active = is_silero_speech_active
         self.silero_working = False
-        print(f"DAB: is_silero_speech_active = {is_silero_speech_active}")
-        print(f"AudioRecorder.wait_audio: silero speech time = {time.time() - timing_start}")
+        #print(f"DAB: is_silero_speech_active = {is_silero_speech_active}")
+        #print(f"AudioRecorder.wait_audio: silero speech time = {time.time() - timing_start}")
         return is_silero_speech_active
 
     def _check_voice_activity(self, data):
@@ -753,14 +783,15 @@ class AudioRecorder:
         Args:
             data: The audio data to be checked for voice activity.
         """
+        return self._is_webrtc_speech(data)
         #print("DAB: Checking voice activity...")
-        if not self.silero_working:
-            self.silero_working = True
+        #if not self.silero_working:
+        #    self.silero_working = True
 
             # Run the intensive check in a separate thread
-            threading.Thread(
-                target=self._is_silero_speech,
-                args=(data,)).start()
+            #threading.Thread(
+            #    target=self._is_silero_speech,
+            #    args=(data,)).start()
 
     def clear_audio_queue(self):
         """
@@ -777,7 +808,45 @@ class AudioRecorder:
             pass
 
     def _is_voice_active(self):
-        return self.is_silero_speech_active
+        return self.is_webrtc_speech_active
+
+    def _is_webrtc_speech(self, chunk, all_frames_must_be_true=False):
+        """
+        Returns true if speech is detected in the provided audio data
+
+        Args:
+            data (bytes): raw bytes of audio data (1024 raw bytes with
+            16000 sample rate and 16 bits per sample)
+        """
+        if self.sample_rate != 16000:
+            pcm_data = np.frombuffer(chunk, dtype=np.int16)
+            data_16000 = signal.resample_poly(
+                pcm_data, 16000, self.sample_rate)
+            chunk = data_16000.astype(np.int16).tobytes()
+
+        # Number of audio frames per millisecond
+        frame_length = int(16000 * 0.01)  # for 10ms frame
+        num_frames = int(len(chunk) / (2 * frame_length))
+        speech_frames = 0
+
+        for i in range(num_frames):
+            start_byte = i * frame_length * 2
+            end_byte = start_byte + frame_length * 2
+            frame = chunk[start_byte:end_byte]
+            if self.webrtc_vad_model.is_speech(frame, 16000):
+                speech_frames += 1
+                if not all_frames_must_be_true:
+                    #print(f"Speech detected in frame {i + 1} of {num_frames}")
+                    self.is_webrtc_speech_active = True
+                    return True
+        if all_frames_must_be_true:
+            speech_detected = speech_frames == num_frames
+            self.is_webrtc_speech_active = speech_detected
+            return speech_detected
+        else:
+            #print(f"Speech not detected in any of {num_frames} frames")
+            self.is_webrtc_speech_active = False
+            return False
     
     def _set_state(self, new_state):
         """Update the current state of the recorder and execute state-change callbacks"""
