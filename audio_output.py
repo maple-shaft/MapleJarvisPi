@@ -6,34 +6,41 @@ import time
 import sounddevice as sd
 from pi_client import PiClient
 from threading import Thread
+import queue as q
 from multiprocessing import Queue
 
 class AudioOutput:
 
-    def __init__(self, recv_queue : Queue, sample_rate, sample_width, channels):
+    def __init__(self,
+         recv_queue : Queue,
+         sample_rate, sample_width,
+         channels,
+         shutdown_event,
+         executor = None):
         self.sample_rate = sample_rate
         self.sample_width = sample_width
         self.channels = channels
         self.recv_queue = recv_queue
-        self.fetch_thread = Thread(target=self._fetch_and_play)
+        if executor:
+            self.executor = executor
+        else:
+            self.fetch_thread = Thread(target=self._fetch_and_play)
+        self.shutdown_event = shutdown_event,
+        self.executor = executor
 
     def start(self):
         print("Starting AudioOutput")
         print(f"Devices: {sd.query_devices()}")
-        self.fetch_thread.start()
-
-    def next_bytes(self):
-        #print("Starting next bytes")
-        if not self.recv_queue.empty():
-            return self.recv_queue.get()
+        if self.executor:
+            self.executor.submit(self._fetch_and_play)
         else:
-            return None
+            self.fetch_thread.start()
 
     def _fetch_and_play(self):
-        print("Starting fetch_and_play runnable")
-        while True:
+        print("AudioOutput: Starting fetch_and_play runnable")
+        while not self.shutdown_event.is_set():
             try:
-                data = self.next_bytes()
+                data = self.recv_queue.get(timeout=0.3)
                 if data is None:
                     time.sleep(1)
                     continue
@@ -46,7 +53,8 @@ class AudioOutput:
                     )
             except KeyboardInterrupt:
                 print("AudioOutput: Captured KeyboardInterrupt!")
-                break
-            except Exception as e:
-                print(f"Exception encountered in fetch_and_play {e}")
+                self.shutdown_event.set()
+            except q.Empty:
                 pass
+            except Exception as e:
+                print(f"AudioOutput: Exception encountered in fetch_and_play {e}")

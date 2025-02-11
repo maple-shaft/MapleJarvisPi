@@ -9,8 +9,9 @@ import numpy as np
 import torch
 import threading as t
 import time
-from multiprocessing import Process, get_context
+from multiprocessing import Process, get_context, Event, Queue
 from scipy import signal
+import concurrent.futures
 
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2
@@ -36,50 +37,63 @@ def main_audio_output(audio_output):
     print("Starting main_audio_output")
     audio_output.start()
 
-def main_audio_capture(client : PiClient):
+def main_audio_capture(send_queue : Queue, shutdown_event : Event, executor):
     print("Starting main_audio_capture coroutine...")
     # Setup voice activity detection model Silero VAD
-    try:
-        silero_vad_model, _ = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
-            model="silero_vad",
-            verbose=False,
-            onnx=False
-        )
-    except Exception as e:
-        print(f"AudioRecorder.__init__: Error initializing Silero VAD")
+    #try:
+    #    silero_vad_model, _ = torch.hub.load(
+    #        repo_or_dir="snakers4/silero-vad",
+    #        model="silero_vad",
+    #        verbose=False,
+    #        onnx=False
+    #    )
+    #except Exception as e:
+    #    print(f"AudioRecorder.__init__: Error initializing Silero VAD")
 
-    audio_input = MicrophoneAudioInput(sample_rate=16000, format=pa.paInt16, channels=1, device_index=1)
+    audio_input = MicrophoneAudioInput(
+         sample_rate=16000,
+         format=pa.paInt16,
+         channels=1,
+         device_index=1)
     aur = AudioRecorder(audio_input=audio_input,
-                        silero_vad_model = silero_vad_model)
+                       # silero_vad_model = silero_vad_model,
+                        shutdown_event = shutdown_event,
+                        executor = executor,
+                        debug = False)
     try:
-        while True:
-            audio_data = aur.wait_audio()
-            print("main.py: GOT AUDIO_DATA!!!")
-            audio16 = np.int16(audio_data * 32767)
-            print("main.py: about to send audio data to client.")
-            client.send(audio16)
-            print(f"main.py: Audio data length: {len(audio16)}")
-            #break
-            #debug_write_to_file(audio16)
-    except KeyboardInterrupt:
-        print("Interrupt signal received, gracefully shutting down.")
+        while not shutdown_event.is_set():
+            try:
+                audio_data = aur.wait_audio()
+                time.sleep(0.1)
+                print("main.py: GOT AUDIO_DATA!!!")
+                audio16 = np.int16(audio_data * 32767)
+                print("main.py: about to send audio data to client.")
+                send_queue.put(audio16)
+                print(f"main.py: Audio data length: {len(audio16)}")
+            except KeyboardInterrupt:
+                print("Interrupt signal received, gracefully shutting down.")
+                shutdown_event.set()
     finally:
-        aur.shutdown() # VERIFY
-        #audio_input.cleanup() # VERIFY
-        #client.stop() # VERIFY
+        aur.shutdown()
 
 if __name__ == "__main__":
     print("Starting main...")
-    client = PiClient(host=HOST, port = PORT)
-    client.start()
-    audio_output = AudioOutput(
-         recv_queue = client.recv_queue,
-         sample_rate = SAMPLE_RATE,
-         sample_width = SAMPLE_WIDTH,
-         channels = 1)
-    main_audio_capture(client = client)
-    time.sleep(4)
-    audio_output.start()
-
+    shutdown_event = Event()
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        client = PiClient(host=HOST,
+                          port = PORT,
+                          shutdown_event = shutdown_event,
+                          debug = False,
+                          executor = executor)
+        client.start()
+        audio_output = AudioOutput(
+             recv_queue = client.recv_queue,
+             sample_rate = 21000,
+             sample_width = SAMPLE_WIDTH,
+             channels = 1,
+             shutdown_event = shutdown_event,
+             executor = executor)
+        audio_output.start()
+        time.sleep(2.0)
+        main_audio_capture(send_queue = client.send_queue, shutdown_event = shutdown_event, executor = executor)
 

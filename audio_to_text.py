@@ -44,8 +44,9 @@ class AudioRecorder:
         on_wakeword_detection_start = None,
         on_wakeword_detection_end = None,
         ctx = None,
-        executor : ProcessPoolExecutor = None,
-        debug = False
+        executor = None,
+        debug = False,
+        shutdown_event = None
         ):
 
         self.buffer_size = buffer_size
@@ -133,17 +134,10 @@ class AudioRecorder:
         self.was_interrupted = mp.Event() if not ctx else ctx.Event()
         self.start_recording_event = mp.Event() if not ctx else ctx.Event()
         self.stop_recording_event = mp.Event() if not ctx else ctx.Event()
-        self.shutdown_event = mp.Event() if not ctx else ctx.Event()
-
-        self.p_audio_pipe , self.c_audio_pipe = mp.Pipe() if not ctx else ctx.Pipe()
-
-        if not executor:
-            try:
-                # Only set the start method if it hasn't been set already
-                if mp.get_start_method(allow_none=True) is None:
-                    mp.set_start_method("spawn")
-            except RuntimeError as e:
-                print(f"AudioRecorder.__init__: Start method has already been set. Details: {e}")
+        if not shutdown_event:
+            self.shutdown_event = mp.Event() if not ctx else ctx.Event()
+        else:
+            self.shutdown_event = shutdown_event
 
         # Threads
         self.recording_thread = None
@@ -151,6 +145,7 @@ class AudioRecorder:
         self.reader_process = None
         self.shutdown_lock = threading.Lock()
 
+        print("KAGNLNSAGLANGLANGOIEGNO$JEN$(#J($JF)$J)FJ$#)FJ#JFNVCKMN$#)GF#")
         # Start audio data reading process
         if self.use_microphone:
             print("AudioRecorder.__init__: Initializing audio recording"
@@ -158,19 +153,21 @@ class AudioRecorder:
                          f" sample rate: {self.sample_rate}"
                          f" buffer size: {self.buffer_size}"
                          )
-            self.reader_process = self._start_thread(
-                target=AudioRecorder._audio_worker,
-                args=(
-                    self.audio_queue,
-                    self.sample_rate,
-                    self.buffer_size,
-                    self.input_device_index,
-                    self.shutdown_event,
-                    self.interrupt_stop_event,
-                    self.audio_input
-                ),
-                executor = self.executor
-            )
+            if self.executor:
+                print("We have an executor, submit audio_worker to it")
+                self.reader_process = self.executor.submit(
+                     AudioRecorder._audio_worker,
+                     self.audio_queue,
+                     self.sample_rate,
+                     self.buffer_size,
+                     self.input_device_index,
+                     self.shutdown_event,
+                     self.interrupt_stop_event,
+                     self.audio_input
+                )
+            else:
+                print("NO EXECUTOR")
+                raise Exception()
         
         # Setup voice activity detection model Silero VAD
         try:
@@ -199,7 +196,13 @@ class AudioRecorder:
             raise
         
         # Start the recording worker thread
-        self.recording_thread = self._start_thread(target=self._recording_worker)
+        if self.executor:
+            print("AudioRecorder.__init__: About to start recording_thread") if self.debug else None
+            self.recording_thread = self.executor.submit(self._recording_worker)
+        else:
+            self.recording_thread = threading.Thread(self._recording_worker)
+            self.recording_thread.daemon = False
+            self.recording_thread.start()
 
     def _start_thread(self, target=None, args=(), executor = None, daemon = False):
         """If linux uses standard threads, otherwise uses pytorch multiprocessing"""
@@ -207,7 +210,7 @@ class AudioRecorder:
         #thread.daemon = True
 
         if executor:
-            thread = self.executor.submit(target)
+            thread = self.executor.submit(fn=target)
         else:
             thread = threading.Thread(target=target, args = args)
             thread.daemon = daemon
@@ -234,7 +237,8 @@ class AudioRecorder:
 
         if __name__ == '__main__':
             system_signal.signal(system_signal.SIGINT, system_signal.SIG_IGN)
-        
+
+        #print("AudioRecorder.audio_worker: About to setup audio_input")
         audio_input.setup()
 
         buffer = bytearray()
@@ -243,8 +247,10 @@ class AudioRecorder:
         try:
             while not shutdown_event.is_set():
                 try:
+                    #print("AudioRecorder.audio_worker: continuing while loop, try to read a chunk")
                     data = audio_input.read_chunk()
                     if data:
+                        #print("AudioRecorder.audio_worker: data is found!")
                         processed_data = audio_input.preprocess(data, target_sample_rate=target_sample_rate)
 
                         buffer += processed_data
@@ -443,14 +449,17 @@ class AudioRecorder:
             self.stop_recording_event.set()
             self.is_recording = False
             self.is_running = False
+            self.shutdown_event.set()
+            print("AudioRecorder.shutdown: About to join to recording_thread")
             if self.recording_thread:
-                self.recording_thread.join()
+                self.recording_thread.join(timeout=1)
+                if self.recording_thread.is_alive():
+                    print("AudioRecorder.shutdown: Recording thread is still alive...")
 
             if self.reader_process:
-                self.reader_process.join(timeout=10)
+                self.reader_process.join(timeout=1)
                 if self.reader_process.is_alive():
-                    print("AudioRecorder.shutdown: Reader process didnt terminate, forcefully terminate it")
-                    #self.reader_process.terminate()
+                    print("AudioRecorder.shutdown: Reader process is still alive...")
             
             import gc
             gc.collect()
@@ -525,6 +534,7 @@ class AudioRecorder:
 
             print("Initialized recording worker")
             while self.is_running:
+                time.sleep(0.01)
                 if self.debug:
                     print("START _recording_worker iteration!")
                 if last_inner_try_time:
@@ -532,7 +542,8 @@ class AudioRecorder:
                     if self.debug:
                         print(f"AudioRecorder._recording_worker: last_processing_time = {last_processing_time}")
                     if last_processing_time > 0.1: # DAB: Original value 0.1
-                        print("recording_worker: Processing took a bit too long...")
+                        pass
+                        #print("recording_worker: Processing took a bit too long...")
                 last_inner_try_time = time.time()
                 try:
                     try:
@@ -549,8 +560,8 @@ class AudioRecorder:
                         self.on_recorded_chunk(data)
 
                     # Check handle buffer overflow, assume True for now
-                    if self.audio_queue.qsize() > 50:  # allowed latency limit
-                        print("recording_worker: queue size exceeds limit")
+                    #if self.audio_queue.qsize() > 50:  # allowed latency limit
+                    #    print("recording_worker: queue size exceeds limit")
 
                     while self.audio_queue.qsize() > 50:
                         data = self.audio_queue.get()
