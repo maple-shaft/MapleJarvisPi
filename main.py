@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import threading as t
 import time
-from multiprocessing import Process, get_context, Event, Queue
+from multiprocessing import Process, get_context, Queue
 from scipy import signal
 import concurrent.futures
 
@@ -37,7 +37,7 @@ def main_audio_output(audio_output):
     print("Starting main_audio_output")
     audio_output.start()
 
-def main_audio_capture(send_queue : Queue, shutdown_event : Event, executor):
+def main_audio_capture(send_queue : Queue, shutdown_event : t.Event, executor):
     print("Starting main_audio_capture coroutine...")
     # Setup voice activity detection model Silero VAD
     #try:
@@ -63,10 +63,12 @@ def main_audio_capture(send_queue : Queue, shutdown_event : Event, executor):
     try:
         while not shutdown_event.is_set():
             try:
-                audio_data = aur.wait_audio()
-                time.sleep(0.1)
+                audio_data = aur.get_audio_for_transcription()
+                #aur.abort()
+                #time.sleep(0.1)
                 print("main.py: GOT AUDIO_DATA!!!")
-                audio16 = np.int16(audio_data * 32767)
+                #audio16 = np.int16(audio_data * 32767)
+                audio16 = audio_data
                 print("main.py: about to send audio data to client.")
                 send_queue.put(audio16)
                 print(f"main.py: Audio data length: {len(audio16)}")
@@ -78,14 +80,13 @@ def main_audio_capture(send_queue : Queue, shutdown_event : Event, executor):
 
 if __name__ == "__main__":
     print("Starting main...")
-    shutdown_event = Event()
+    shutdown_event = t.Event()
     with concurrent.futures.ThreadPoolExecutor() as executor:
         client = PiClient(host=HOST,
                           port = PORT,
                           shutdown_event = shutdown_event,
                           debug = False,
                           executor = executor)
-        client.start()
         audio_output = AudioOutput(
              recv_queue = client.recv_queue,
              sample_rate = 21000,
@@ -93,7 +94,10 @@ if __name__ == "__main__":
              channels = 1,
              shutdown_event = shutdown_event,
              executor = executor)
-        audio_output.start()
+        client_future = executor.submit(client._client_worker)
+        print(f"main.py: client_future = {client_future}")
+        audio_output_future = executor.submit(audio_output._fetch_and_play)
+        print(f"main.py: audio_output_future = {audio_output_future}")
         time.sleep(2.0)
         main_audio_capture(send_queue = client.send_queue, shutdown_event = shutdown_event, executor = executor)
 

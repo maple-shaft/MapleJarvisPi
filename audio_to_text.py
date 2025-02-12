@@ -30,7 +30,7 @@ class AudioRecorder:
         wakeword_buffer_duration : float = 0.1,
         wakewords_sensitivity = 0.5,
         wakeword_activation_delay = 0.0,
-        min_length_of_recording = 1.0, # DAB: Original value 0.5
+        min_length_of_recording = 0.5, # DAB: Original value 0.5
         start_recording_on_voice_activity = True,
         stop_recording_on_voice_deactivity = True,
         prerecording_buffer_duration : float = 1.0,
@@ -225,6 +225,20 @@ class AudioRecorder:
         except Exception as e:
             print(f"AudioRecorder.init_wakewords: Exception encountered in init_wakewords: {e}")
 
+    def debug_audio(self, data):
+        # DAB: Debug procedure to see what the hell is captured in this audio
+        from pydub import AudioSegment
+        from scipy.io import wavfile
+        import uuid
+        try:
+            # Normalize and convert NumPy array to int16 PCM
+            audio_wav = np.frombuffer(data, dtype=np.int16)
+            # Create an in-memory buffer for raw audio
+            wavfile.write(filename=f"/tmp/wav_{uuid.uuid4()}", rate = 16000, data = audio_wav)
+            # Convert raw audio into an AudioSegment   
+        except Exception as e:
+            print(f"Exception writing audio file for testing: {e}")
+
     @staticmethod
     def _audio_worker(
         audio_queue : queue.Queue,
@@ -259,18 +273,8 @@ class AudioRecorder:
                             buffer = buffer[silero_buffer_size:]
 
                             # DAB: Debug procedure to see what the hell is captured in this audio
-                            #from pydub import AudioSegment
-                            #from scipy.io import wavfile
-                            #import uuid
-                            #try:
-                                # Normalize and convert NumPy array to int16 PCM
-                            #    audio_wav = np.frombuffer(to_process, dtype=np.int16)
-                            #    # Create an in-memory buffer for raw audio
-                            #    wavfile.write(filename=f"/tmp/wav_{uuid.uuid4()}", rate = 16000, data = audio_wav)
-                            #    # Convert raw audio into an AudioSegment   
-                            #except Exception as e:
-                            #    print(f"Exception writing audio file for testing: {e}")
-
+                            #debug_audio(to_process)
+                            
                             # feed to the audio_queue
                             if time_since_last_buffer_message:
                                 time_passed = time.time() - time_since_last_buffer_message
@@ -311,8 +315,9 @@ class AudioRecorder:
 
         # Ensure there's a minimum interval
         # between stopping and starting recording
-        if (time.time() - self.recording_stop_time
-                < 0.0):
+        #if (time.time() - self.recording_stop_time
+        #        < 0.0):
+        if (time.time() - self.recording_stop_time) < 5:
             print("AudioRecorder.start: Attempted to start recording too soon after stopping.")
             return self
 
@@ -379,6 +384,53 @@ class AudioRecorder:
         self.start_recording_on_voice_activity = True
 
     def wait_audio(self):
+        try:
+            if self.debug:
+                print(f"START wait_audio, if listen_start is 0 then we will set it now. listen_start")
+            if self.listen_start == 0:
+                self.listen_start = time.time()
+
+            # If not already recording, wait for voice activity to start
+            if not self.is_recording and not self.frames:
+                self._set_state("listening")
+                self.start_recording_on_voice_activity = True
+
+                if self.debug:
+                    print("AudioRecorder.wait_audio: Waiting for recording to start...")
+                while not self.interrupt_stop_event.is_set():
+                    if self.start_recording_event.wait(timeout = 0.04): # DAB: Original value 0.04
+                        if self.debug:
+                            print("AudioRecorder.wait_audio: BREAK on start_recording_event")
+                        break
+
+            # if recording is ongoing, then wait for voice inactivity
+            if self.is_recording:
+                self.stop_recording_on_voice_deactivity = True
+                if self.debug:
+                    print("AudioRecorder.wait_audio: Waiting for recording to stop...")
+                while not self.interrupt_stop_event.is_set():
+                    if (self.stop_recording_event.wait(timeout = 0.02)): # DAB: Originally 0.02
+                        if self.debug:
+                            print("AudioRecorder.wait_audio: BREAK on stop_recording_event")
+                        break
+            frames = self.frames
+            self.is_silero_speech_active = False
+            self.is_webrtc_speech_active = False
+            self.silero_check_time = 0
+
+            audio_array = np.frombuffer(b"".join(frames), dtype=np.int16)
+            self.audio = audio_array
+            #self.audio = audio_array.astype(np.float32) # DAB: This is probably not necessary.
+            self.frames.clear()
+            self.recording_stop_time = 0
+            self.listen_start = 0
+            self._set_state("inactive")
+            return self.audio
+        except KeyboardInterrupt:
+            self.shutdown()
+            raise
+
+    def wait_rev_audio(self):
         """Waits for the start and completion of the recording process"""
         try:
             if self.debug:
@@ -451,15 +503,15 @@ class AudioRecorder:
             self.is_running = False
             self.shutdown_event.set()
             print("AudioRecorder.shutdown: About to join to recording_thread")
-            if self.recording_thread:
-                self.recording_thread.join(timeout=1)
-                if self.recording_thread.is_alive():
-                    print("AudioRecorder.shutdown: Recording thread is still alive...")
+            #if self.recording_thread:
+            #    self.recording_thread.join(timeout=1)
+            #    if self.recording_thread.is_alive():
+            #        print("AudioRecorder.shutdown: Recording thread is still alive...")
 
-            if self.reader_process:
-                self.reader_process.join(timeout=1)
-                if self.reader_process.is_alive():
-                    print("AudioRecorder.shutdown: Reader process is still alive...")
+            #if self.reader_process:
+            #    self.reader_process.join(timeout=1)
+            #    if self.reader_process.is_alive():
+            #        print("AudioRecorder.shutdown: Reader process is still alive...")
             
             import gc
             gc.collect()
@@ -548,6 +600,7 @@ class AudioRecorder:
                 try:
                     try:
                         data = self.audio_queue.get(timeout=0.01) # DAB: Original value 0.01
+                        #self.debug_audio(data)
                         if self.debug:
                             print(f"DAB: Found some data in audio_queue: {type(data)}")
                     except queue.Empty:
