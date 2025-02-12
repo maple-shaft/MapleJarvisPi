@@ -63,6 +63,8 @@ def main_audio_capture(send_queue : Queue, shutdown_event : t.Event, executor):
     try:
         while not shutdown_event.is_set():
             try:
+                time.sleep(2)
+                aur.is_running = True
                 audio_data = aur.get_audio_for_transcription()
                 #aur.abort()
                 #time.sleep(0.1)

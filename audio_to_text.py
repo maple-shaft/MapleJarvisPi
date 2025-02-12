@@ -481,6 +481,7 @@ class AudioRecorder:
             self.listen_start = 0
             self._set_state("inactive")
 
+            self.is_running = False
             if self.debug:
                 print("END wait_audio")
             return ret_audio
