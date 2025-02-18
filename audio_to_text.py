@@ -24,7 +24,7 @@ class AudioRecorder:
         sample_rate : int = 16000,
         device : str = "cpu",
         use_microphone = True,
-        wakewords = "hey jarvis",
+        wakewords = "hey freddy",
         silero_vad_model = None,
         wakeword_timeout : float = 5.0,
         wakeword_buffer_duration : float = 0.1,
@@ -145,7 +145,6 @@ class AudioRecorder:
         self.reader_process = None
         self.shutdown_lock = threading.Lock()
 
-        print("KAGNLNSAGLANGLANGOIEGNO$JEN$(#J($JF)$J)FJ$#)FJ#JFNVCKMN$#)GF#")
         # Start audio data reading process
         if self.use_microphone:
             print("AudioRecorder.__init__: Initializing audio recording"
@@ -220,7 +219,8 @@ class AudioRecorder:
     def init_wakewords(self):
         try:
             self.openwakeword = oww.Model(
-                wakeword_models=["hey_jarvis_v0.1.tflite"]
+                wakeword_models=["models/hey_freddy.onnx"],
+                inference_framework="onnx"
             )
         except Exception as e:
             print(f"AudioRecorder.init_wakewords: Exception encountered in init_wakewords: {e}")

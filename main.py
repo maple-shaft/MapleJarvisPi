@@ -17,7 +17,7 @@ SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2
 FORMAT = pa.paInt16
 CHANNELS = 1
-DEVICE_INDEX = 1
+DEVICE_INDEX = 2 # Obviously this will be host machine dependent.  Hint: python -c "from audio_input import MicrophoneAudioInput ; MicrophoneAudioInput().list_devices()"
 HOST = "10.0.0.169"
 PORT = 9100
 
@@ -33,28 +33,13 @@ def debug_write_to_file(audio16, filepath : str = "/tmp/pitest.wav"):
     except Exception as e:
         print(f"main:debug_write_to_file: Exception encountered: {e}")
 
-def main_audio_output(audio_output):
-    print("Starting main_audio_output")
-    audio_output.start()
-
 def main_audio_capture(send_queue : Queue, shutdown_event : t.Event, executor):
     print("Starting main_audio_capture coroutine...")
-    # Setup voice activity detection model Silero VAD
-    #try:
-    #    silero_vad_model, _ = torch.hub.load(
-    #        repo_or_dir="snakers4/silero-vad",
-    #        model="silero_vad",
-    #        verbose=False,
-    #        onnx=False
-    #    )
-    #except Exception as e:
-    #    print(f"AudioRecorder.__init__: Error initializing Silero VAD")
-
     audio_input = MicrophoneAudioInput(
          sample_rate=16000,
          format=pa.paInt16,
          channels=1,
-         device_index=1)
+         device_index=DEVICE_INDEX)
     aur = AudioRecorder(audio_input=audio_input,
                        # silero_vad_model = silero_vad_model,
                         shutdown_event = shutdown_event,
