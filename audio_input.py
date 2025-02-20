@@ -13,9 +13,16 @@ SAMPLE_WIDTH = 2
 
 class AudioInput:
 
-    def __init__(self, chunk = CHUNK, format = FORMAT, channels = CHANNELS, desired_rate = DESIRED_RATE, sample_rate = SAMPLE_RATE):
+    def __init__(self,
+                 chunk = CHUNK,
+                 format = FORMAT,
+                 channels = CHANNELS,
+                 desired_rate = DESIRED_RATE,
+                 sample_rate = SAMPLE_RATE,
+                 debug = False):
         self.sample_rate = sample_rate
         self.stream = None
+        self.debug = debug
 
         # Constants
         self.chunk = chunk
@@ -28,9 +35,10 @@ class AudioInput:
         raise NotImplementedError("Subclass must implement this abstract method")
         
     def read_chunk(self):
+        debug = self.debug
         while not any(v := self.stream.read(1, False)):
             pass
-        #print(f"Read non zero chunk {v}")
+        print(f"AudioInput.read_chunk: Read non zero chunk {v}") if debug else None
         return self.stream.read(self.chunk, exception_on_overflow=False)
     
     def preprocess(self, chunk, target_sample_rate) -> bytes:
@@ -57,14 +65,6 @@ class AudioInput:
                 chunk = chunk.astype(np.int16)
         return chunk.tobytes()
     
-    def convert_webm_opus_to_wav(self, data : BytesIO) -> bytes:
-        """Helper function to convert webm format to wav"""
-        audio = AudioSegment.from_file(data, codec="opus", format="webm")
-        wav_data = BytesIO()
-        audio.export(wav_data, format="wav")
-        wav_data.seek(0)
-        return wav_data.getvalue()
-    
     def cleanup(self):
         """Cleanup audio resources"""
         try:
@@ -86,8 +86,9 @@ class MicrophoneAudioInput(AudioInput):
                  channels = CHANNELS,
                  desired_rate = DESIRED_RATE,
                  sample_rate = SAMPLE_RATE,
-                 device_index = 2):
-        super(MicrophoneAudioInput, self).__init__(chunk,format,channels,desired_rate,sample_rate)
+                 device_index = 2,
+                 debug = False):
+        super(MicrophoneAudioInput, self).__init__(chunk,format,channels,desired_rate,sample_rate,debug)
         self.device_index = device_index
         self.audio_interface = None
 

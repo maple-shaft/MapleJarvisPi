@@ -25,6 +25,8 @@ class AudioRecorder:
         device : str = "cpu",
         use_microphone = True,
         wakewords = "hey freddy",
+        wakeword_model_path : str = "models/hey_freddy.onnx",
+        wakeword_inference_framework : str = "onnx",
         silero_vad_model = None,
         wakeword_timeout : float = 5.0,
         wakeword_buffer_duration : float = 0.1,
@@ -71,6 +73,8 @@ class AudioRecorder:
         self.openwakeword_buffer_size = None
         self.openwakeword_frame_rate = None
         self.wakeword_backend = "openwakeword"
+        self.wakeword_model_path = wakeword_model_path
+        self.wakeword_inference_framework = wakeword_inference_framework
         self.wakeword_activation_delay : float = wakeword_activation_delay
         self.wakeword_timeout : float = wakeword_timeout
         self.wakeword_buffer_duration : float = wakeword_buffer_duration
@@ -90,7 +94,7 @@ class AudioRecorder:
             for _ in range(len(self.wakewords_list))
         ]
 
-        self.init_wakewords()
+        self.init_wakewords(wakeword_model_path, wakeword_inference_framework)
 
         # Callbacks
         self.on_recording_start = on_recording_start
@@ -196,31 +200,14 @@ class AudioRecorder:
         
         # Start the recording worker thread
         if self.executor:
-            print("AudioRecorder.__init__: About to start recording_thread") if self.debug else None
+            print("AudioRecorder.__init__: About to start recording_thread") if debug else None
             self.recording_thread = self.executor.submit(self._recording_worker)
-        else:
-            self.recording_thread = threading.Thread(self._recording_worker)
-            self.recording_thread.daemon = False
-            self.recording_thread.start()
 
-    def _start_thread(self, target=None, args=(), executor = None, daemon = False):
-        """If linux uses standard threads, otherwise uses pytorch multiprocessing"""
-        #thread = threading.Thread(target = target, args = args)
-        #thread.daemon = True
-
-        if executor:
-            thread = self.executor.submit(fn=target)
-        else:
-            thread = threading.Thread(target=target, args = args)
-            thread.daemon = daemon
-            thread.start()
-        return thread
-
-    def init_wakewords(self):
+    def init_wakewords(self, model_path : str, inference_framework : str = "onnx"):
         try:
             self.openwakeword = oww.Model(
-                wakeword_models=["models/hey_freddy.onnx"],
-                inference_framework="onnx"
+                wakeword_models=[model_path],
+                inference_framework=inference_framework
             )
         except Exception as e:
             print(f"AudioRecorder.init_wakewords: Exception encountered in init_wakewords: {e}")
@@ -294,6 +281,7 @@ class AudioRecorder:
         except KeyboardInterrupt:
             interrupt_stop_event.set()
             print("Audio data worker process finished due to KeyboardInterrupt in audio_worker")
+            shutdown_event.set()
         finally:
             # After recording stops, feed remaining buffer data
             if buffer:
@@ -427,66 +415,6 @@ class AudioRecorder:
             self._set_state("inactive")
             return self.audio
         except KeyboardInterrupt:
-            self.shutdown()
-            raise
-
-    def wait_rev_audio(self):
-        """Waits for the start and completion of the recording process"""
-        try:
-            if self.debug:
-                print(f"START wait_audio, if listen_start is 0 then we will set it now. listen_start is {self.listen_start}")
-            if self.listen_start == 0:
-                self.listen_start = time.time()
-
-            # If not already recording, wait for voice activity to start
-            if not self.is_recording and not self.frames:
-                self._set_state("listening")
-                self.start_recording_on_voice_activity = True
-
-                if self.debug:
-                    print("AudioRecorder.wait_audio: Waiting for recording to start...")
-                while not self.interrupt_stop_event.is_set():
-                    if self.start_recording_event.wait(timeout = 0.04): # DAB: Original value 0.04
-                        if self.debug:
-                            print("AudioRecorder.wait_audio: BREAK on start_recording_event")
-                        break
-            # if recording is ongoing, then wait for voice inactivity
-            if self.is_recording:
-                self.stop_recording_on_voice_deactivity = True
-                if self.debug:
-                    print("AudioRecorder.wait_audio: Waiting for recording to stop...")
-                while not self.interrupt_stop_event.is_set():
-                    if (self.stop_recording_event.wait(timeout = 0.02)): # DAB: Originally 0.02
-                        if self.debug:
-                            print("AudioRecorder.wait_audio: BREAK on stop_recording_event")
-                        break
-
-            if self.debug:
-                print("AudioRecorder.wait_audio: About to convert recorded frames to the appropriate format.")
-            # Convert recorded frames to the appropriate audio format
-            audio_array = np.frombuffer(b"".join(self.frames), dtype=np.int16)
-            ret_audio = copy.deepcopy(audio_array.astype(np.float32) / 32768.0)
-            self.frames.clear()
-            self.clear_audio_queue()
-            self.audio = None
-            # Reset recording related timestamps
-            if self.debug:
-                print("AudioRecorder.wait_audio: About to reset recording related timestamps")
-            self.is_recording = False
-            self.start_recording_on_voice_activity = False
-            self.stop_recording_on_voice_deactivity = False
-
-            #self.abort()
-            self.recording_stop_time = 0
-            self.listen_start = 0
-            self._set_state("inactive")
-
-            self.is_running = False
-            if self.debug:
-                print("END wait_audio")
-            return ret_audio
-        except Exception as e:
-            print(f"Exception encounterd in wait_audio {e}")
             self.shutdown()
             raise
 

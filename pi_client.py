@@ -1,7 +1,6 @@
 import numpy as np
 import pyaudio as pa
 import socket
-import select
 import pickle
 import queue as q
 import asyncio
@@ -9,7 +8,6 @@ from asyncio.exceptions import CancelledError
 from typing import Any, AsyncGenerator
 import multiprocessing as mp
 from threading import Event, Thread
-import time
 
 TIME_SLEEP = 2.0
 
@@ -26,6 +24,7 @@ class PiClient:
         self.recv_queue = mp.Queue()
         self.send_queue = mp.Queue()
         self.shutdown_event : Event = shutdown_event
+        self.debug = debug
         if executor:
             self.executor = executor
         else:
@@ -33,7 +32,6 @@ class PiClient:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.setblocking(False)
-        self.debug = debug,
         self.executor = executor
 
     def start(self):
@@ -53,80 +51,68 @@ class PiClient:
             print(f"PiClient.client_worker: Exception encountered {e}")
 
     async def _client_worker_async(self):
-        if self.debug:
-            print("PiClient.client_worker_async: Starting client worker")
+        debug = self.debug
+        print("PiClient.client_worker_async: Starting client worker") if debug else None
         try:
-            # self.socket.connect_ex((self.host, self.port))
             reader, writer = await asyncio.open_connection(host=self.host, port=self.port)
 
-            print("PiClient.client_worker_async: Created Asyncio Connection") if self.debug else None
+            print("PiClient.client_worker_async: Created Asyncio Connection") if debug else None
             send_coro : asyncio.Task = None
             receive_coro : asyncio.Task = None
             while not self.shutdown_event.is_set():
                 await asyncio.sleep(TIME_SLEEP)
                 try:
                     if send_coro is None or send_coro.done():
-                        if self.debug:
-                            print("PiClient.client_worker: About to check if send_queue is empty")
+                        print("PiClient.client_worker: About to check if send_queue is empty") if debug else None
                         if self.send_queue.empty():
-                            if self.debug:
-                                print("PiClient.client_worker: Send queue is empty, continuing...") if self.debug else None
+                            print("PiClient.client_worker: Send queue is empty, continuing...") if debug else None
                         else:
-                            if self.debug:
-                                print("PiClient.client_worker: About to get latest object from send queue")
+                            print("PiClient.client_worker: About to get latest object from send queue") if debug else None
                             send_data = self.send_queue.get(timeout=0.1)
-                            if self.debug:
-                                print(f"PiClient.client_worker: Got send_data of type {type(send_data)}")
-                            #asyncio.create_task(self._send(send_data, writer))
-                            print("ABOUT TO CHECK SEND CORO!!!!!!")
+                            print(f"PiClient.client_worker: Got send_data of type {type(send_data)}") if debug else None
+                            print("PiClient.client_worker: About to create send coroutine...") if debug else None
                             send_coro = asyncio.create_task(self._send(send_data, writer))
-                            print(f"SEND CORO IS TYPE {type(send_coro)}")
+                            print(f"PiClient.client_worker: Send coroutine is type {type(send_coro)}") if debug else None
                 except Exception as e:
                     print(f"PiClient.client_worker: Error sending data: {e}")
             
                 try:
                     if receive_coro is None or receive_coro.done():
-                        print("PiClient.client_worker: About to call self.receive()") if self.debug else None
-                        #asyncio.create_task(self.receive(reader))
-                        print("ABOUT TO CHECK RECEIVE_CORO!!!!!!")
+                        print("PiClient.client_worker: About to call self.receive()") if debug else None
                         receive_coro = asyncio.create_task(self.receive(reader))
-                        print(f"RECEIVE_CORO IS TYPE {type(receive_coro)}")
+                        print(f"PiClient.client_worker: Receive coroutine is type {type(receive_coro)}") if debug else None
                 except Exception as e:
                     print(f"PiClient.client_worker: Error receiving data: {e}")
 
         finally:
             print("PiClient.client_worker_async: About to close the reader and writer")
             writer.close()
-            await writer.wait_closed()
-            #time.sleep(TIME_SLEEP)
 
     def send(self, obj):
         self.send_queue.put(obj)
     
     async def _send(self, obj, writer):
+        debug = self.debug
         try:
-            if self.debug:
-                print(f"PiClient._send: Starting _send of obj of type {type(obj)}")
+            print(f"PiClient._send: Starting _send of obj of type {type(obj)}") if debug else None
             val = pickle.dumps(obj)
             length = len(val)
             length = str(length).rjust(8,"0")
-            if self.debug:
-                print(f"PiClient._send: Length of pickled obj data to send = {length}")
+            print(f"PiClient._send: Length of pickled obj data to send = {length}") if debug else None
 
             writer.write(bytes(length, "utf-8"))
             await writer.drain()
-            if self.debug:
-                print("PiClient._send: Sent the length bytes to server, now send the pickled data")
+            print("PiClient._send: Sent the length bytes to server, now send the pickled data") if debug else None
             writer.write(val)
             await writer.drain()
-            if self.debug:
-                print("PiClient._send: Sent the pickled data to the server.")
+            print("PiClient._send: Sent the pickled data to the server.") if debug else None
         except Exception as e:
             print(f"PiClient._send: Exception encountered {e}")
             raise
 
     async def receive(self, reader):
-        print("PiClient.receive: Starting receive") if self.debug else None
+        debug = self.debug
+        print("PiClient.receive: Starting receive") if debug else None
         try:
             length = None
             length = await reader.read(8)
@@ -151,7 +137,7 @@ class PiClient:
 
             # now that we have everything, pickle it to an object
             obj = pickle.loads(message)
-            print(f"PiClient.receive: Received obj {obj} of type {type(obj)}")
+            print(f"PiClient.receive: Received obj {obj} of type {type(obj)}") if debug else None
             self.recv_queue.put(obj)
         except Exception as e:
             print(f"PiClient.receive: Exception encountered in receive: {e}")
