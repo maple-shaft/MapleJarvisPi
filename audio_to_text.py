@@ -278,6 +278,7 @@ class AudioRecorder:
                     continue
                 except Exception as e:
                     print(f"Exception encountered in audio_worker: {e}")
+                    time.sleep(5.0)
                     continue
         except KeyboardInterrupt:
             interrupt_stop_event.set()

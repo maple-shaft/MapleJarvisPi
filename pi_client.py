@@ -56,6 +56,9 @@ class PiClient:
         try:
             reader, writer = await asyncio.open_connection(host=self.host, port=self.port)
 
+            if not reader or not writer:
+                print("PiClient.client_worker_async: Could not establish a connection with the server!")
+
             print("PiClient.client_worker_async: Created Asyncio Connection") if debug else None
             send_coro : asyncio.Task = None
             receive_coro : asyncio.Task = None
@@ -86,7 +89,8 @@ class PiClient:
 
         finally:
             print("PiClient.client_worker_async: About to close the reader and writer")
-            writer.close()
+            if writer:
+                writer.close()
 
     def send(self, obj):
         self.send_queue.put(obj)
